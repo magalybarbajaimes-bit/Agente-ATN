@@ -144,38 +144,44 @@ const renderAgent = (raw = '') => {
 
 /* ========= PASO 2: reintentos silenciosos y sin fallback visible ========= */
 const fetchWithRetry = async (payload, tries = 3) => {
-  // opcional: timeout de 28s para no chocar con API Gateway
-  const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), 28000)
+  const backoff = (i) => new Promise(r => setTimeout(r, 600 * i))
 
-  try {
-    const backoff = (i) => new Promise(r => setTimeout(r, 600 * i))
-    for (let i = 1; i <= tries; i++) {
+  for (let i = 1; i <= tries; i++) {
+    try {
       const res = await fetch(
         'https://uh6t6ss2x1.execute-api.us-east-1.amazonaws.com/support-chat',
         {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify(payload),
-          signal: controller.signal
+          body: JSON.stringify(payload)
         }
-      ).catch(() => null)
+      )
 
-      if (!res || !res.ok) { await backoff(i); continue }
+      if (!res.ok) {
+        const text = await res.text()
+        console.warn('⚠️ Respuesta no OK:', res.status, text)
+        await backoff(i)
+        continue
+      }
 
-      const data = await res.json().catch(() => ({}))
-      const reply = (data?.reply || '').trim()
+      const data = await res.json().catch((e) => {
+        console.error('❌ Error al parsear JSON:', e)
+        return {}
+      })
 
-      // Si la Lambda retornó marcador “...” o vacío, reintenta
-      if (reply && reply !== '...') return reply
+      console.log('🟢 JSON de la API:', data)
 
-      await backoff(i)
+      const reply = (data?.reply ?? '').toString().trim()
+      if (reply) return reply
+    } catch (e) {
+      console.error('❌ Error de fetch intento', i, e)
     }
-    // Último recurso: mensaje neutro, sin “No pude…”
-    return 'Estoy consultando tu información. Dame unos segundos y vuelve a intentar.'
-  } finally {
-    clearTimeout(timer)
+
+    await backoff(i)
   }
+
+  // Si después de los reintentos no hay nada, ahora sí mandas algo genérico
+  return 'Hubo un problema al conectar con el asistente. Intenta de nuevo.'
 }
 
 const sendMessage = async () => {
