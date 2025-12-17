@@ -1,6 +1,6 @@
 import logoMTC from '../assets/MTCenter_logo.png'
 <template>
-  
+
   <div class="chat-wrapper">
     <!-- Botones de acceso rapido -->
     <div class="quick-sidebar">
