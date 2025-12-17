@@ -27,7 +27,7 @@
           <div class="btn-icon">🛜</div>
           <span>Depósitos</span>
         </button>
-        <button class="sidebar-btn" @click="quickAction('liberaciónD')">
+        <button class="sidebar-btn" @click="quickAction('LiberaciónD')">
           <div class="btn-icon">🔍</div>
           <span>Liberación de depósitos</span>
         </button>
@@ -186,55 +186,109 @@ const clearChat = () => {
   // sessionId se mantiene
 }
 
-// --- formato de texto del agente
+// --- formato de texto del agente (con sub-lista Cuenta/CLABE)
 const renderAgent = (raw = '') => {
   if (!raw) return ''
-  let text = String(raw).replace(/\\n/g, '\n').trim()
-    .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank">$1</a>')
-    .replace(/(?<!["'])\b(https?:\/\/[^\s<]+)\b/g, '<a href="$1" target="_blank">$1</a>')
-    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
 
-  const lines = text.split('\n')
+  // 1) Normaliza texto (soporta \n reales y \\n)
+  let text = String(raw)
+
+  // si llega doble escapado
+  text = text.replace(/\\n/g, '\n')
+
+  // quita \ al final de línea (soft break estilo markdown) y líneas que solo son "\"
+  text = text
+    .replace(/\r\n/g, '\n')
+    .replace(/\\\s*\n/g, '\n')
+    .replace(/^\s*\\\s*$/gm, '')
+
+  // links + negritas
+  text = text
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>')
+    .replace(/(?<!["'])\b(https?:\/\/[^\s<]+)\b/g, '<a href="$1" target="_blank" rel="noopener">$1</a>')
+    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+    .trim()
+
+  const lines = text.split('\n').map(l => l.trim())
+
+  // helpers
+  const isBullet = (l) => /^([•\-*])\s+/.test(l)
+  const cleanBullet = (l) => l.replace(/^([•\-*])\s+/, '').trim()
+  const isOrdered = (l) => /^(\d+[\.\)]|Paso\s+\d+[:\.])\s+/i.test(l)
+  const cleanOrdered = (l) => l.replace(/^(\d+[\.\)]|Paso\s+\d+[:\.])\s+/i, '').trim()
+  const isSubField = (l) => /^(Cuenta|CLABE)\s*:/i.test(l)
+
   let html = ''
-  let mode = null
+  let mode = null // null | 'ul' | 'ol' | 'p'
   let buf = []
 
+  // para UL con sublistas
+  let ulItems = [] // { text: string, sub: string[] }
+
   const flush = () => {
-    if (!buf.length && !mode) return
+    if (!mode) return
     if (mode === 'ul') {
-      html += `<ul class="agent-ul">${buf.map(li => `<li>${li}</li>`).join('')}</ul>`
-    } else if (mode === 'ol') {
-      html += `<ol class="agent-ol">${buf.map(li => `<li>${li}</li>`).join('')}</ol>`
-    } else {
-      html += `<p>${buf.join('<br/>')}</p>`
+      // vuelca ulItems si están; si no, usa buf plano
+      if (ulItems.length) {
+        html += `<ul class="agent-ul">` + ulItems.map(it => {
+          const sub = it.sub?.length
+            ? `<ul class="agent-subul">${it.sub.map(s => `<li>${s}</li>`).join('')}</ul>`
+            : ''
+          return `<li>${it.text}${sub}</li>`
+        }).join('') + `</ul>`
+      } else if (buf.length) {
+        html += `<ul class="agent-ul">${buf.map(li => `<li>${li}</li>`).join('')}</ul>`
+      }
+      ulItems = []
+      buf = []
+      mode = null
+      return
     }
+    if (mode === 'ol') {
+      if (buf.length) html += `<ol class="agent-ol">${buf.map(li => `<li>${li}</li>`).join('')}</ol>`
+      buf = []
+      mode = null
+      return
+    }
+    // párrafo
+    if (buf.length) html += `<p>${buf.join('<br/>')}</p>`
     buf = []
     mode = null
   }
-
-  const asBullet = l => l.replace(/^[-•]\s+/, '').trim()
-  const asNum = l => l.replace(/^(\d+[\.\)]|Paso\s+\d+[:\.])\s+/i, '').trim()
-
   for (let i = 0; i < lines.length; i++) {
-    const rawLine = lines[i]
-    const line = rawLine.trim()
+    const line = lines[i]
     if (!line) {
+      // separador de párrafo
       if (mode === 'ul' || mode === 'ol') continue
       flush()
       continue
     }
-    if (/^[-•]\s+/.test(line)) {
-      const item = asBullet(line)
-      if (mode !== 'ul') { flush(); mode = 'ul' }
+    // BULLETS
+    if (isBullet(line)) {
+      const item = cleanBullet(line)
+      if (mode !== 'ul') {
+        flush()
+        mode = 'ul'
+      }
+      //regla: si es "Cuenta:" o "CLABE:" se vuelve subitem del último banco
+      if (isSubField(item) && ulItems.length) {
+        ulItems[ulItems.length - 1].sub.push(item)
+      } else {
+        ulItems.push({ text: item, sub: [] })
+      }
+      continue
+    }
+    // ORDERED
+    if (isOrdered(line)) {
+      const item = cleanOrdered(line)
+      if (mode !== 'ol') {
+        flush()
+        mode = 'ol'
+      }
       buf.push(item)
       continue
     }
-    if (/^(\d+[\.\)]|Paso\s+\d+[:\.])\s+/i.test(line)) {
-      const item = asNum(line)
-      if (mode !== 'ol') { flush(); mode = 'ol' }
-      buf.push(item)
-      continue
-    }
+    // TEXTO NORMAL
     if (mode === 'ul' || mode === 'ol') flush()
     mode = mode || 'p'
     buf.push(line)
@@ -258,19 +312,19 @@ const fetchWithRetry = async (payload, tries = 3) => {
       )
       if (!res.ok) {
         const text = await res.text()
-        console.warn('⚠️ Respuesta no OK:', res.status, text)
+        console.warn('Respuesta no OK:', res.status, text)
         await backoff(i)
         continue
       }
       const data = await res.json().catch((e) => {
-        console.error('❌ Error al parsear JSON:', e)
+        console.error('Error al parsear JSON:', e)
         return {}
       })
-      console.log('🟢 JSON de la API:', data)
+      console.log('JSON de la API:', data)
       const reply = (data?.reply ?? '').toString().trim()
       if (reply) return reply
     } catch (e) {
-      console.error('❌ Error de fetch intento', i, e)
+      console.error('Error de fetch intento', i, e)
     }
     await backoff(i)
   }
@@ -478,5 +532,16 @@ body {
 .colored-send-btn:disabled { 
   opacity: .5; 
   cursor: not-allowed; transform: none !important;
+}
+
+.agent-ul, .agent-ol {
+  margin: .35rem 0 .8rem 1.1rem;
+  padding-left: 1rem;
+}
+
+.agent-subul{
+  margin: .35rem 0 0.2rem 1rem;   /* indentación extra */
+  padding-left: 1.1rem;
+  list-style: circle;             /* se nota que es subnivel */
 }
 </style>
